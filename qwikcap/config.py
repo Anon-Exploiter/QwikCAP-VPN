@@ -4,7 +4,14 @@ import yaml
 from pathlib import Path
 from typing import Any
 
-CONFIG_PATH = Path(os.environ.get("QWIKCAP_CONFIG", Path.home() / ".qwikcap" / "config.yaml"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+
+if LOCAL_CONFIG_PATH.exists():
+    CONFIG_PATH = LOCAL_CONFIG_PATH
+else:
+    CONFIG_PATH = Path(os.environ.get("QWIKCAP_CONFIG", Path.home() / ".qwikcap" / "config.yaml"))
+
 STATE_PATH = CONFIG_PATH.parent / "state.yaml"
 
 DEFAULTS: dict[str, Any] = {
@@ -162,26 +169,30 @@ def save_state(state: dict) -> None:
 
 def get_lan_ip() -> str:
     """Best-effort detection of the LAN IP other devices can reach."""
+    # Ask the kernel which source address it would use for an outbound route.
+    # This does not send traffic, but it tracks the active default route well.
     try:
-        import netifaces
-        gws = netifaces.gateways()
-        default_iface = gws.get("default", {}).get(netifaces.AF_INET, [None, None])[1]
-        if default_iface:
-            addrs = netifaces.ifaddresses(default_iface)
-            inet = addrs.get(netifaces.AF_INET)
-            if inet:
-                return inet[0]["addr"]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        if not ip.startswith("127."):
+            return ip
     except Exception:
         pass
-    # Fallback: UDP trick (no packet sent)
+
+    # Offline fallback: use locally registered IPv4 addresses and ignore loopback.
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        hostname = socket.gethostname()
+        for family, _, _, _, sockaddr in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
+            if family != socket.AF_INET:
+                continue
+            ip = sockaddr[0]
+            if not ip.startswith("127."):
+                return ip
     except Exception:
-        return "127.0.0.1"
+        pass
+
+    return "127.0.0.1"
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
