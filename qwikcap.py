@@ -159,7 +159,7 @@ def start(proxy_port, rebuild):
 
     lan_ip = cfg_mod.get_lan_ip()
 
-    click.echo(f"\nVPN is up. Proxy: {cfg['proxy']['host']}:{cfg['proxy']['port']}")
+    click.echo(f"\nVPN is up. LAN IP: {lan_ip}  Proxy: {cfg['proxy']['host']}:{cfg['proxy']['port']}")
 
     for name, c in state["clients"].items():
         conf = profile_gen.render_client_conf(
