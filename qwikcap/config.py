@@ -1,5 +1,9 @@
+import ipaddress
 import os
+import platform
+import re
 import socket
+import subprocess
 import yaml
 from pathlib import Path
 from typing import Any
@@ -24,6 +28,7 @@ DEFAULTS: dict[str, Any] = {
         "subnet": "10.13.37.0/24",
         "server_ip": "10.13.37.1",
         "listen_port": 51820,
+        "interface": None,
     },
     "docker": {
         "image_name": "qwikcap-wg",
@@ -167,8 +172,106 @@ def save_state(state: dict) -> None:
         yaml.dump(state, f, default_flow_style=False)
 
 
-def get_lan_ip() -> str:
+def list_interfaces() -> list[dict[str, str]]:
+    """Return named IPv4 interfaces that are plausible LAN candidates."""
+    if platform.system() != "Windows":
+        return []
+
+    try:
+        output = subprocess.check_output(
+            ["ipconfig"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return []
+
+    interfaces = []
+    current_name = None
+    current_ip = None
+
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        header = re.match(r"^[^:]+ adapter (.+):$", stripped)
+        if header:
+            if current_name and current_ip:
+                interfaces.append({"name": current_name, "ip": current_ip})
+            current_name = header.group(1).strip()
+            current_ip = None
+            continue
+
+        if not current_name:
+            continue
+
+        if "IPv4 Address" in stripped or "Autoconfiguration IPv4 Address" in stripped:
+            _, _, value = stripped.partition(":")
+            ip = value.replace("(Preferred)", "").strip()
+            try:
+                parsed = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if parsed.version == 4 and not parsed.is_loopback:
+                current_ip = ip
+
+    if current_name and current_ip:
+        interfaces.append({"name": current_name, "ip": current_ip})
+
+    # Preserve order while removing duplicates by IP/name pair.
+    unique = []
+    seen = set()
+    for item in interfaces:
+        key = (item["name"].casefold(), item["ip"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def _preferred_interface_ip(preferred: str | None) -> str | None:
+    if not preferred:
+        return None
+
+    preferred = preferred.strip()
+    if not preferred:
+        return None
+
+    try:
+        parsed = ipaddress.ip_address(preferred)
+        if parsed.version == 4:
+            return preferred
+    except ValueError:
+        pass
+
+    interfaces = list_interfaces()
+    if not interfaces:
+        return None
+
+    wanted = preferred.casefold()
+
+    for iface in interfaces:
+        if iface["name"].casefold() == wanted:
+            return iface["ip"]
+
+    partial_matches = [iface["ip"] for iface in interfaces if wanted in iface["name"].casefold()]
+    if len(partial_matches) == 1:
+        return partial_matches[0]
+
+    return None
+
+
+def get_lan_ip(cfg: dict | None = None) -> str:
     """Best-effort detection of the LAN IP other devices can reach."""
+    preferred = None
+    if cfg:
+        preferred = cfg.get("vpn", {}).get("interface")
+
+    preferred_ip = _preferred_interface_ip(preferred)
+    if preferred_ip:
+        return preferred_ip
+
     # Ask the kernel which source address it would use for an outbound route.
     # This does not send traffic, but it tracks the active default route well.
     try:

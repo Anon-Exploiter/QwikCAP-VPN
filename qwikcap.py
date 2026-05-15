@@ -157,7 +157,7 @@ def start(proxy_port, rebuild):
         _do_stop(cfg, state)
         sys.exit(1)
 
-    lan_ip = cfg_mod.get_lan_ip()
+    lan_ip = cfg_mod.get_lan_ip(cfg)
 
     click.echo(f"\nVPN is up. LAN IP: {lan_ip}  Proxy: {cfg['proxy']['host']}:{cfg['proxy']['port']}")
 
@@ -236,7 +236,7 @@ def add_client(name):
     }
     cfg_mod.save_state(state)
 
-    lan_ip = cfg_mod.get_lan_ip()
+    lan_ip = cfg_mod.get_lan_ip(cfg)
     conf = profile_gen.render_client_conf(
         client_privkey=priv,
         client_ip=_client_ip(idx),
@@ -260,9 +260,13 @@ def status():
     state = cfg_mod.load_state()
 
     running = dm.is_running(cfg)
+    selected_interface = cfg.get("vpn", {}).get("interface")
+    lan_ip = cfg_mod.get_lan_ip(cfg)
     click.echo(f"Container : {'running' if running else 'stopped'}")
     click.echo(f"Proxy     : {cfg['proxy']['host']}:{cfg['proxy']['port']}")
     click.echo(f"VPN port  : {cfg['vpn']['listen_port']}/udp")
+    click.echo(f"Interface : {selected_interface or 'auto'}")
+    click.echo(f"LAN IP    : {lan_ip}")
 
     clients = state.get("clients", {})
     click.echo(f"\nClients ({len(clients)}):")
@@ -284,7 +288,8 @@ def status():
 @click.option("--proxy-port", type=int, help="Set Burp proxy port")
 @click.option("--proxy-host", type=str, help="Set Burp proxy host")
 @click.option("--vpn-port", type=int, help="Set WireGuard listen port")
-def config(proxy_port, proxy_host, vpn_port):
+@click.option("--vpn-interface", type=str, help='Preferred LAN interface or IPv4 to advertise. Use "auto" to clear.')
+def config(proxy_port, proxy_host, vpn_port, vpn_interface):
     """View or update configuration."""
     cfg = cfg_mod.load()
 
@@ -294,13 +299,34 @@ def config(proxy_port, proxy_host, vpn_port):
         cfg["proxy"]["host"] = proxy_host
     if vpn_port:
         cfg["vpn"]["listen_port"] = vpn_port
+    if vpn_interface is not None:
+        value = vpn_interface.strip()
+        cfg["vpn"]["interface"] = None if value.lower() == "auto" or not value else value
 
-    if any([proxy_port, proxy_host, vpn_port]):
+    if any([proxy_port, proxy_host, vpn_port]) or vpn_interface is not None:
         cfg_mod.save(cfg)
         click.echo("Config saved.")
     else:
         import yaml
         click.echo(yaml.dump(cfg, default_flow_style=False))
+
+
+@cli.command()
+def interfaces():
+    """List detected LAN interfaces that can be pinned in config."""
+    cfg = cfg_mod.load()
+    selected = (cfg.get("vpn", {}) or {}).get("interface")
+    interfaces = cfg_mod.list_interfaces()
+
+    click.echo(f"Configured interface: {selected or 'auto'}")
+    if not interfaces:
+        click.echo("No named interfaces detected. Auto-detect fallback will be used.")
+        click.echo(f"Current LAN IP: {cfg_mod.get_lan_ip(cfg)}")
+        return
+
+    for iface in interfaces:
+        marker = "*" if selected and iface["name"].casefold() == selected.casefold() else " "
+        click.echo(f"{marker} {iface['name']}: {iface['ip']}")
 
 
 @cli.command()
